@@ -1,0 +1,43 @@
+# Python bytecode and temporary caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Virtual Environments
+venv/
+env/
+ENV/
+.venv/
+
+# Large Model Weights and Checkpoints (Downloaded automatically at runtime)
+*.safetensors
+*.ckpt
+*.bin
+*.onnx
+*.pt
+*.pth
+output/cache/
+
+# Output directories & user-generated assets
+output/*.glb
+output/*.obj
+output/*.png
+output/*.jpg
+output/*.ply
+!output/.gitkeep
+
+# IDE and Editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS temporary files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Temporary log files
+*.log

@@ -1,0 +1,32 @@
+# ====================================================================
+# AI-Powered 3D Model Creator - Dependencies
+# ====================================================================
+
+# Core Machine Learning & Diffusion
+torch>=2.4.0
+torchvision>=0.19.0
+diffusers>=0.31.0
+transformers>=4.44.0
+accelerate>=0.33.0
+safetensors>=0.4.4
+einops>=0.8.0
+
+# Hardware Acceleration for AMD Radeon & Intel Arc (Windows)
+torch-directml>=0.2.5.dev240914
+
+# 3D Geometry Processing & Decimation
+trimesh>=4.0.0
+pymeshlab>=2023.12
+scikit-image>=0.22.0
+scipy>=1.11.0
+numpy>=1.26.0
+
+# Image Preprocessing & Background Removal
+Pillow>=10.0.0
+rembg>=2.0.50
+onnxruntime>=1.18.0
+
+# Interactive Web Interface & CLI
+gradio>=3.43.0
+tqdm>=4.66.0
+PyYAML>=6.0.1
