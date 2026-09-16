@@ -5,6 +5,7 @@ Multi-angle Image-to-3D generation (Front, Left, Back, Right) on DirectML (AMD R
 import os
 import sys
 import time
+import math
 from typing import Optional, Callable, Any, Union
 from PIL import Image
 import torch
@@ -23,31 +24,38 @@ from hy3dgen.shapegen.pipelines import export_to_trimesh, retrieve_timesteps
 from hy3dgen.shapegen.models.autoencoders import SurfaceExtractors
 from app.models.base import Base3DModel
 
+_orig_dino_forward = None
 
-def chunked_dino_forward(self, hidden_states, **kwargs):
+def chunked_dino_forward(self, hidden_states, head_mask=None, output_attentions=False):
     """
-    Chunked Attention for DINOv2 to prevent DirectML allocation crashes.
+    Chunked Attention for DINOv2 to prevent DirectML allocation crashes on 8GB GPUs.
+    Properly matches HuggingFace Dinov2SelfAttention signature and attributes.
     """
-    B, L, C = hidden_states.shape
-    qkv = self.qkv(hidden_states)
-    qkv = qkv.reshape(B, L, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-    query, key, value = qkv[0], qkv[1], qkv[2]
+    mixed_query_layer = self.query(hidden_states)
+    key_layer = self.transpose_for_scores(self.key(hidden_states))
+    value_layer = self.transpose_for_scores(self.value(hidden_states))
+    query_layer = self.transpose_for_scores(mixed_query_layer)
 
-    scale = self.head_dim ** -0.5
+    B, H, L, D = query_layer.shape
     chunk_size = 512
+    scale = 1.0 / math.sqrt(D)
+
     context_chunks = []
     for i in range(0, L, chunk_size):
-        q_chunk = query[:, :, i:i+chunk_size, :]
-        attn_scores = torch.matmul(q_chunk, key.transpose(-1, -2)) * scale
+        q_chunk = query_layer[:, :, i:i+chunk_size, :]
+        attn_scores = torch.matmul(q_chunk, key_layer.transpose(-1, -2)) * scale
         attn_probs = torch.softmax(attn_scores, dim=-1)
-        ctx_chunk = torch.matmul(attn_probs, value)
+        attn_probs = self.dropout(attn_probs)
+        if head_mask is not None:
+            attn_probs = attn_probs * head_mask
+        ctx_chunk = torch.matmul(attn_probs, value_layer)
         context_chunks.append(ctx_chunk)
 
     context_layer = torch.cat(context_chunks, dim=2)
     context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
     new_shape = context_layer.size()[:-2] + (self.all_head_size,)
     context_layer = context_layer.view(new_shape)
-    return (context_layer,)
+    return (context_layer, None) if output_attentions else (context_layer,)
 
 
 class Hunyuan3DMultiViewModel(Base3DModel):
@@ -76,7 +84,10 @@ class Hunyuan3DMultiViewModel(Base3DModel):
             return
 
         print(f"[Hunyuan3D Multi-View] Cargando pipeline en {self.device_name}...", flush=True)
+        global _orig_dino_forward
         from transformers.models.dinov2.modeling_dinov2 import Dinov2SelfAttention
+        if _orig_dino_forward is None:
+            _orig_dino_forward = Dinov2SelfAttention.forward
         Dinov2SelfAttention.forward = chunked_dino_forward
 
         self.pipe = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
@@ -131,13 +142,20 @@ class Hunyuan3DMultiViewModel(Base3DModel):
         except Exception as e:
             print(f"[Hunyuan3D Multi-View] Fallback DINOv2 CPU ({e})...", flush=True)
             self.pipe.conditioner.to('cpu', dtype=torch.float32)
-            with torch.no_grad():
-                cond = self.pipe.encode_cond(
-                    image=img_tensor,
-                    additional_cond_inputs=cond_inputs,
-                    do_classifier_free_guidance=True,
-                    dual_guidance=False,
-                )
+            from transformers.models.dinov2.modeling_dinov2 import Dinov2SelfAttention
+            orig_fwd = Dinov2SelfAttention.forward
+            if _orig_dino_forward is not None:
+                Dinov2SelfAttention.forward = _orig_dino_forward
+            try:
+                with torch.no_grad():
+                    cond = self.pipe.encode_cond(
+                        image=img_tensor,
+                        additional_cond_inputs=cond_inputs,
+                        do_classifier_free_guidance=True,
+                        dual_guidance=False,
+                    )
+            finally:
+                Dinov2SelfAttention.forward = orig_fwd
             return cond
 
     def _diffuse(self, cond: dict, num_steps: int, progress_callback: Optional[Callable] = None) -> torch.Tensor:
@@ -145,18 +163,18 @@ class Hunyuan3DMultiViewModel(Base3DModel):
         self.pipe.model.to(d, dtype=torch.float16)
         self.pipe.model.eval()
 
-        cond_gpu = {}
-        for k, v in cond.items():
-            if isinstance(v, torch.Tensor):
-                cond_gpu[k] = v.to(d, dtype=torch.float16 if v.is_floating_point() else v.dtype)
-            elif isinstance(v, dict):
-                cond_gpu[k] = {
-                    subk: subv.to(d, dtype=torch.float16 if subv.is_floating_point() else subv.dtype)
-                    if isinstance(subv, torch.Tensor) else subv
-                    for subk, subv in v.items()
-                }
-            else:
-                cond_gpu[k] = v
+        def to_device_recursive(obj):
+            if isinstance(obj, torch.Tensor):
+                return obj.to(d, dtype=torch.float16 if obj.is_floating_point() else obj.dtype)
+            elif isinstance(obj, dict):
+                return {k: to_device_recursive(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [to_device_recursive(v) for v in obj]
+            elif isinstance(obj, tuple):
+                return tuple(to_device_recursive(v) for v in obj)
+            return obj
+
+        cond_gpu = to_device_recursive(cond)
 
         batch_size = 1
         sigmas = [i / num_steps for i in range(num_steps + 1)]
