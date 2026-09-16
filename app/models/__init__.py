@@ -4,9 +4,11 @@ AI-Powered 3D Model Creator Model Registry
 from typing import Dict, Type
 from .base import Base3DModel
 from .hunyuan3d_model import Hunyuan3DModel
+from .hunyuan3d_mv_model import Hunyuan3DMultiViewModel
 from .triposr_model import TripoSRModel
 
 MODEL_REGISTRY: Dict[str, Type[Base3DModel]] = {
+    "Hunyuan3D-2 Multi-View Turbo": Hunyuan3DMultiViewModel,
     "Hunyuan3D-2 Turbo": Hunyuan3DModel,
     "TripoSR": TripoSRModel,
 }
@@ -33,11 +35,15 @@ def unload_all_models() -> None:
         model.unload()
     _LOADED_INSTANCES.clear()
 
+get_available_models = list_models
+
 __all__ = [
     "Base3DModel",
     "Hunyuan3DModel",
+    "Hunyuan3DMultiViewModel",
     "TripoSRModel",
     "list_models",
+    "get_available_models",
     "get_model",
     "unload_all_models",
 ]

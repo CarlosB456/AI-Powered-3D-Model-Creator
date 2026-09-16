@@ -87,5 +87,5 @@ Running this in naive chunks of 10,000 queries required 214 kernel dispatches an
 | Metric | Before Optimization | After Optimization |
 |---|---|---|
 | Total Generation Time | 11.5 minutes | **2.0 - 2.5 minutes** |
-| GPU Usability on AMD RX 6600 | ❌ Crashed (OOM) |  100% Stable (Max 3.2 GB VRAM) |
+| GPU Usability on AMD RX 6600 | Failed (OOM) | 100% Stable (Max 3.2 GB VRAM) |
 | User Interface | Raw terminal scripts | Unified Bilingual Web UI + 3D Viewport |

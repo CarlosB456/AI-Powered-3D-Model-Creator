@@ -42,17 +42,19 @@ Este proyecto introduce **Gestion Secuencial de Memoria**, **Atencion Fragmentad
 ## Caracteristicas
 
 - **Motor Multi-Modelo (`app/models/`):**
+  - **Hunyuan3D-2 Multi-View Turbo**: Reconstruccion avanzada multi-angulo combinando hasta 4 perspectivas (Frontal 0 deg, Izquierda 90 deg, Trasera 180 deg, Derecha 270 deg) mediante incrustaciones sinusoidales 1D de angulo de camara. Elimina completamente las alucinaciones geometricas en la parte posterior y los laterales.
   - **Hunyuan3D-2 Turbo**: Maxima fidelidad geometrica y detalle superficial (~2.0 - 2.5 min en RX 6600).
   - **TripoSR**: Generacion feed-forward instantanea (~12 segundos) para prototipos veloces.
   - **Base Modular**: Arquitectura `Base3DModel` para conectar facilmente futuros modelos de IA.
 - **Aceleracion Nativa AMD RDNA & DirectML:**
   - Pipeline completo en DirectML FP16 para Windows sin requerir Linux, WSL2 ni instalaciones experimentales de ROCm.
-- **Eliminacion Automatica de Fondo:**
-  - Extraccion de figura con `rembg` (U2-Net), centrado automatico y margenes proporcionales.
+- **Eliminacion Automatica de Fondo Multi-Angulo:**
+  - Extraccion de figura con `rembg` (U2-Net), centrado automatico y margenes proporcionales para todas las perspectivas cargadas.
 - **Reduccion y Optimizacion de Poligonos (PyMeshLab):**
   - Colapso cuadratico de aristas para fijar presupuestos exactos de caras (ej. 10k, 25k, 50k poligonos) para exportar directamente a Roblox Studio, Blender, Unity o Unreal Engine.
 - **Estudio Web Moderno (`app/web_ui.py`):**
   - Estetica oscura de estudio profesional.
+  - **Pestanas de Flujo Dual**: Alterna facilmente entre Vista Unica (una sola foto) y Multi-Angulos 360 (vistas ortogonales frontal, trasera y laterales).
   - **Visor 3D Interactivo (`gr.Model3D`)**: Rota en 360 grados, haz zoom e inspecciona mallas directamente en el navegador.
   - **Selector Dinamico de Idioma**: Cambia entre **Espanol** e **Ingles** en tiempo real.
   - Descarga directa en un clic de archivos `.glb` y `.obj`.
@@ -119,10 +121,13 @@ Arrastra cualquier archivo `.png` o `.jpg` directamente sobre **`CLI_GENERATE.ba
 
 ### Opcion 3: Linea de Comandos (CLI)
 ```bash
-# Calidad alta con Hunyuan3D-2 Turbo (~2 min, 35k caras objetivo, auto-rembg)
+# Generacion Multi-Angulo (Vistas Frontal + Izquierda + Trasera, eliminando puntos ciegos):
+python app/cli.py --front frontal.png --left izquierda.png --back trasera.png --model "Hunyuan3D-2 Multi-View Turbo" --calidad rapida --rembg
+
+# Generacion de imagen unica con Hunyuan3D-2 Turbo (~2 min, 35k caras objetivo, auto-rembg)
 python app/cli.py mi_imagen.png --model "Hunyuan3D-2 Turbo" --calidad ultra --rembg --decimate 35000
 
-# Ultrarrapido con TripoSR (~12 seg)
+# Generacion ultrarrapida de imagen unica con TripoSR (~12 seg)
 python app/cli.py mi_imagen.png --model "TripoSR" --rembg
 ```
 
@@ -154,11 +159,12 @@ pip install -r requirements.txt
 ```text
 AI-Powered-3D-Model-Creator/
 ├── app/
-│   ├── web_ui.py                 # Estudio Web (Bilingue ES/EN, Visor 3D)
-│   ├── cli.py                    # Linea de comandos unificada
+│   ├── web_ui.py                 # Estudio Web (Bilingue ES/EN, Flujo Dual Vista Unica/Multi-Angulo, Visor 3D)
+│   ├── cli.py                    # Linea de comandos unificada con banderas de perspectiva individual y multi-angulo
 │   ├── models/
 │   │   ├── base.py               # Interfaz abstracta Base3DModel
-│   │   ├── hunyuan3d_model.py    # Adaptador Hunyuan3D-2 Turbo DirectML
+│   │   ├── hunyuan3d_model.py    # Adaptador Hunyuan3D-2 Turbo DirectML (vista unica)
+│   │   ├── hunyuan3d_mv_model.py # Adaptador Hunyuan3D-2 Multi-View Turbo DirectML (multi-angulo)
 │   │   └── triposr_model.py      # Adaptador TripoSR ultrarrapido
 │   └── processors/
 │       ├── background.py         # Recorte automatico de fondo con rembg

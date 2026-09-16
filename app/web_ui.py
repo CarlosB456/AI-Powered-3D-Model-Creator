@@ -28,7 +28,14 @@ I18N = {
         "subtitle": "Estudio Local de Generación Image-to-3D",
         "desc": f"Aceleración por GPU: {GPU_NAME} · DirectML FP16",
         "model_label": "Modelo de IA",
-        "image_label": "Imagen de Entrada",
+        "tab_single": "Vista Unica",
+        "tab_multi": "Multi-Angulos (360°)",
+        "image_label": "Imagen Frontal / Principal",
+        "view_front": "Vista Frontal (0°) - Principal",
+        "view_left": "Vista Izquierda (90°)",
+        "view_back": "Vista Trasera (180°)",
+        "view_right": "Vista Derecha (270°)",
+        "multi_hint": "Sube al menos la vista frontal y trasera (o lateral) para capturar el modelo en 360° con máxima precisión.",
         "rembg_label": "Eliminar fondo automáticamente",
         "mesh_header": "Configuración de Geometría",
         "quality_label": "Calidad (Resolución de Octree y Pasos DiT)",
@@ -41,10 +48,11 @@ I18N = {
         "cutout_label": "Recorte Procesado",
         "download_glb": "Descargar GLB",
         "download_obj": "Descargar OBJ",
-        "no_image_err": "Por favor sube una imagen primero.",
+        "no_image_err": "Por favor sube al menos una imagen.",
         "status_generating": "Generando modelo 3D con",
         "r_title": "Modelo 3D Generado",
         "r_model": "Modelo",
+        "r_views": "Modo de Vista",
         "r_gpu": "GPU",
         "r_verts": "Vértices",
         "r_faces": "Caras",
@@ -57,7 +65,14 @@ I18N = {
         "subtitle": "Local AI Image-to-3D Studio",
         "desc": f"GPU Acceleration: {GPU_NAME} · DirectML FP16",
         "model_label": "AI Model",
-        "image_label": "Input Image",
+        "tab_single": "Single View",
+        "tab_multi": "Multi-Angle (360°)",
+        "image_label": "Front / Main Image",
+        "view_front": "Front View (0°) - Primary",
+        "view_left": "Left View (90°)",
+        "view_back": "Back View (180°)",
+        "view_right": "Right View (270°)",
+        "multi_hint": "Upload at least Front and Back (or Left) views to capture 360° geometry without hallucination.",
         "rembg_label": "Auto-remove background",
         "mesh_header": "Geometry Settings",
         "quality_label": "Quality (Octree Resolution & DiT Steps)",
@@ -70,10 +85,11 @@ I18N = {
         "cutout_label": "Processed Cutout",
         "download_glb": "Download GLB",
         "download_obj": "Download OBJ",
-        "no_image_err": "Please upload an image first.",
+        "no_image_err": "Please upload at least one image.",
         "status_generating": "Generating 3D model with",
         "r_title": "3D Model Ready",
         "r_model": "Model",
+        "r_views": "View Mode",
         "r_gpu": "GPU",
         "r_verts": "Vertices",
         "r_faces": "Faces",
@@ -99,7 +115,7 @@ html, body, .gradio-container {
 }
 
 .gradio-container {
-    max-width: 1360px !important;
+    max-width: 1380px !important;
     margin: 0 auto !important;
     padding: 24px 32px !important;
 }
@@ -158,6 +174,27 @@ html, body, .gradio-container {
     display: flex;
     align-items: center;
     gap: 6px;
+}
+
+/* ── Tabs Styling ── */
+.tab-nav {
+    border-bottom: 1px solid #1e2336 !important;
+    margin-bottom: 12px !important;
+}
+.tab-nav button {
+    background: transparent !important;
+    border: none !important;
+    color: #94a3b8 !important;
+    font-weight: 600 !important;
+    font-size: 0.9rem !important;
+    padding: 8px 16px !important;
+    border-radius: 8px 8px 0 0 !important;
+    transition: all 0.2s ease !important;
+}
+.tab-nav button.selected {
+    color: #f8fafc !important;
+    border-bottom: 2px solid #8b5cf6 !important;
+    background: rgba(139, 92, 246, 0.08) !important;
 }
 
 /* ── Labels & Text ── */
@@ -266,23 +303,73 @@ def render_ftr(lang: str) -> str:
     t = I18N[lang]
     return f'<div class="studio-footer">{t["footer"]}</div>'
 
-def ejecutar_generacion(img, modelo, rembg_on, calidad, dec_on, dec_target, norm_on, lang):
+def ejecutar_generacion(
+    img_single, img_front, img_left, img_back, img_right,
+    modelo, rembg_on, calidad, dec_on, dec_target, norm_on, lang
+):
     t = I18N.get(lang, I18N["es"])
-    if img is None:
-        return None, None, None, None, f"[Error] {t['no_image_err']}"
-
     t_start = time.time()
     out_dir = os.path.join(root_dir, "output")
     os.makedirs(out_dir, exist_ok=True)
 
-    pil = img.convert("RGBA")
-    if rembg_on:
-        pil = remove_background(pil)
-    pil = prepare_foreground(pil, target_size=512)
+    # 1. Determine input mode: Multi-view or Single Image
+    raw_images = {}
+    if img_front is not None: raw_images['front'] = img_front
+    if img_left is not None: raw_images['left'] = img_left
+    if img_back is not None: raw_images['back'] = img_back
+    if img_right is not None: raw_images['right'] = img_right
 
-    print(f"[AI-Powered 3D Model Creator] {t['status_generating']} {modelo} ({calidad})...", flush=True)
-    model = get_model(modelo)
-    mesh = model.generate(pil, quality=calidad)
+    is_multiview = len(raw_images) > 0
+    if not is_multiview and img_single is None:
+        return None, None, None, None, f"[Error] {t['no_image_err']}"
+
+    # Auto-switch to Multi-View model if multiple views provided and default single-view model was selected
+    actual_model_name = modelo
+    if is_multiview and len(raw_images) > 1 and "Multi-View" not in actual_model_name:
+        actual_model_name = "Hunyuan3D-2 Multi-View Turbo"
+        print(f"[AI-Powered 3D Model Creator] Multiples angulos detectados ({list(raw_images.keys())}). Usando {actual_model_name}...", flush=True)
+
+    # 2. Process images (rembg + centering)
+    preview_cutout = None
+    input_payload = None
+    views_info = ""
+
+    if is_multiview:
+        processed_dict = {}
+        for view_tag, raw_img in raw_images.items():
+            pil = raw_img.convert("RGBA")
+            if rembg_on:
+                pil = remove_background(pil)
+            pil = prepare_foreground(pil, target_size=512)
+            processed_dict[view_tag] = pil
+            if view_tag == 'front' or preview_cutout is None:
+                preview_cutout = pil
+
+        # If model expects single image but we are in multi-view, pass front image
+        if "Multi-View" in actual_model_name:
+            input_payload = processed_dict
+            views_info = f"Multi-Angulo ({', '.join(processed_dict.keys())})"
+        else:
+            input_payload = processed_dict.get('front', next(iter(processed_dict.values())))
+            views_info = f"Vista Unica (Frontal)"
+    else:
+        pil = img_single.convert("RGBA")
+        if rembg_on:
+            pil = remove_background(pil)
+        pil = prepare_foreground(pil, target_size=512)
+        preview_cutout = pil
+
+        if "Multi-View" in actual_model_name:
+            input_payload = {"front": pil}
+            views_info = "Multi-View (Frontal)"
+        else:
+            input_payload = pil
+            views_info = "Vista Unica"
+
+    # 3. Model generation
+    print(f"[AI-Powered 3D Model Creator] {t['status_generating']} {actual_model_name} ({calidad})...", flush=True)
+    model = get_model(actual_model_name)
+    mesh = model.generate(input_payload, quality=calidad)
 
     vi = len(mesh.vertices)
     fi = len(mesh.faces)
@@ -304,14 +391,15 @@ def ejecutar_generacion(img, modelo, rembg_on, calidad, dec_on, dec_target, norm
 
 | Metrica / Metric | Detalle / Detail |
 |---|---|
-| **{t['r_model']}** | `{modelo}` |
+| **{t['r_model']}** | `{actual_model_name}` |
+| **{t['r_views']}** | `{views_info}` |
 | **{t['r_gpu']}** | `{GPU_NAME}` |
 | **{t['r_verts']}** | **{vf:,}** (original: {vi:,}) |
 | **{t['r_faces']}** | **{ff:,}** (original: {fi:,}) |
 | **{t['r_size']}** | **{glb_kb:.1f} KB** |
 | **{t['r_time']}** | **{t_total:.1f} segundos** |
 """
-    return pil, glb_path, glb_path, obj_path, info_md
+    return preview_cutout, glb_path, glb_path, obj_path, info_md
 
 def cambiar_idioma(sel):
     lang = "es" if "Español" in sel else "en"
@@ -321,6 +409,10 @@ def cambiar_idioma(sel):
         render_hdr(lang),
         gr.Dropdown.update(label=t["model_label"]),
         gr.Image.update(label=t["image_label"]),
+        gr.Image.update(label=t["view_front"]),
+        gr.Image.update(label=t["view_left"]),
+        gr.Image.update(label=t["view_back"]),
+        gr.Image.update(label=t["view_right"]),
         gr.Checkbox.update(label=t["rembg_label"]),
         gr.Dropdown.update(label=t["quality_label"], info=t["quality_info"]),
         gr.Checkbox.update(label=t["decimate_label"]),
@@ -385,11 +477,25 @@ with gr.Blocks(
                     label=I18N["es"]["model_label"],
                     interactive=True
                 )
-                imagen_input = gr.Image(
-                    label=I18N["es"]["image_label"],
-                    type="pil",
-                    height=280
-                )
+
+                # Input Mode Tabs: Single View vs Multi-Angle
+                with gr.Tabs() as input_tabs:
+                    with gr.Tab(I18N["es"]["tab_single"]):
+                        imagen_input_single = gr.Image(
+                            label=I18N["es"]["image_label"],
+                            type="pil",
+                            height=280
+                        )
+
+                    with gr.Tab(I18N["es"]["tab_multi"]):
+                        gr.HTML(f'<div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 8px;">{I18N["es"]["multi_hint"]}</div>')
+                        with gr.Row():
+                            imagen_front = gr.Image(label=I18N["es"]["view_front"], type="pil", height=150)
+                            imagen_left = gr.Image(label=I18N["es"]["view_left"], type="pil", height=150)
+                        with gr.Row():
+                            imagen_back = gr.Image(label=I18N["es"]["view_back"], type="pil", height=150)
+                            imagen_right = gr.Image(label=I18N["es"]["view_right"], type="pil", height=150)
+
                 quitar_fondo_cb = gr.Checkbox(
                     value=True,
                     label=I18N["es"]["rembg_label"]
@@ -464,7 +570,11 @@ with gr.Blocks(
             lang_state,
             header_html,
             modelo_selector,
-            imagen_input,
+            imagen_input_single,
+            imagen_front,
+            imagen_left,
+            imagen_back,
+            imagen_right,
             quitar_fondo_cb,
             calidad_dropdown,
             reducir_poligonos_cb,
@@ -488,7 +598,11 @@ with gr.Blocks(
     generar_btn.click(
         fn=ejecutar_generacion,
         inputs=[
-            imagen_input,
+            imagen_input_single,
+            imagen_front,
+            imagen_left,
+            imagen_back,
+            imagen_right,
             modelo_selector,
             quitar_fondo_cb,
             calidad_dropdown,

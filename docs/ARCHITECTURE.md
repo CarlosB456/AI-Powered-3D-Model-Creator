@@ -4,28 +4,36 @@ AI-Powered 3D Model Creator is structured as a modular, hardware-agnostic 3D gen
 
 ---
 
-##  System Architecture Diagram
+## System Architecture Diagram
 
 ```mermaid
 flowchart TD
     subgraph Input["Input Pipeline"]
-        IMG[" Input Image (PNG/JPG)"]
-        REMBG[" Background Remover (rembg)"]
-        PREP[" Foreground Centering & Normalization"]
+        IMG["Input Image(s): Single View or Multi-Angle (0°, 90°, 180°, 270°)"]
+        REMBG["Automated Background Remover (rembg)"]
+        PREP["Foreground Centering & Aspect Normalization"]
         IMG --> REMBG --> PREP
     end
 
     subgraph Core["Model Engine Dispatcher (Base3DModel)"]
         PREP --> ROUTER{"Model Selector"}
+        ROUTER -->|"Hunyuan3D-2 Multi-View Turbo"| MV3D["Hunyuan3D Multi-View Adapter"]
         ROUTER -->|"Hunyuan3D-2 Turbo"| H3D["Hunyuan3D Adapter"]
         ROUTER -->|"TripoSR"| T3D["TripoSR Adapter"]
         ROUTER -.->|"Future Model"| F3D["Pluggable Engine"]
     end
 
+    subgraph MV_Pipeline["Hunyuan3D Multi-View Pipeline"]
+        MV3D --> MVDINO["DinoImageEncoderMV (1.1B)<br/>Sinusoidal Camera Angle Embeddings (GPU)"]
+        MVDINO --> MVDIT["MV DiT Flow-Matching Denoiser (560M)<br/>DirectML Zero-Copy Integration (GPU)"]
+        MVDIT --> MVVAE["VAE geo_decoder (328M)<br/>KV-Cached 8k Chunks (GPU)"]
+        MVVAE --> MVMC["Marching Cubes Extraction (CPU)"]
+    end
+
     subgraph H3D_Pipeline["Hunyuan3D-2 Turbo Execution Flow"]
         H3D --> DINO["DINOv2 (1.1B)<br/>Chunked Attention FP16 (GPU)"]
         DINO --> DIT["DiT Denoiser (560M)<br/>Zero-Copy Euler Flow Matching (GPU)"]
-        DIT --> VAE["VAE geo_decoder (328M)<br/>KV-Cached 32k Chunks (GPU)"]
+        DIT --> VAE["VAE geo_decoder (328M)<br/>KV-Cached 8k Chunks (GPU)"]
         VAE --> MC["Marching Cubes<br/>Dual / Skimage (CPU)"]
     end
 
@@ -55,7 +63,7 @@ flowchart TD
 
 ---
 
-##  Key Architecture Principles
+## Key Architecture Principles
 
 ### 1. Unified Model Abstraction (`app/models/base.py`)
 All 3D generative backends implement the `Base3DModel` contract:

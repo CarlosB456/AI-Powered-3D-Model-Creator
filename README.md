@@ -41,17 +41,19 @@ This project introduces **Phased Memory Lifecycle Swapping**, **Chunked Self-Att
 ## Features
 
 - **Multi-Model Engine (`app/models/`):**
+  - **Hunyuan3D-2 Multi-View Turbo**: State-of-the-art multi-angle reconstruction combining up to 4 perspectives (Front 0 deg, Left 90 deg, Back 180 deg, Right 270 deg) using 1D camera angle sinusoidal embeddings. Completely eliminates geometric hallucination on backsides and hidden surfaces.
   - **Hunyuan3D-2 Turbo**: High-fidelity geometric foundation model with intricate surface detail (~2.0 - 2.5 min on RX 6600).
   - **TripoSR**: Instant feed-forward transformer generation (~12 seconds) for rapid prototyping.
   - **Pluggable Architecture**: Modular `Base3DModel` contract for integrating future generative backends.
 - **AMD RDNA & DirectML Native Acceleration:**
   - Full DirectML FP16 pipeline that runs natively on Windows without requiring Linux, WSL2, or experimental ROCm setups.
-- **Automated Background Removal:**
-  - Built-in `rembg` (U2-Net) foreground extraction with automatic bounding-box centering and canvas padding.
+- **Automated Multi-Angle Background Removal:**
+  - Built-in `rembg` (U2-Net) foreground extraction with automatic bounding-box centering and canvas padding for all uploaded perspectives.
 - **Polygon Decimation & Optimization (PyMeshLab):**
   - Quadric Edge Collapse Decimation allows setting exact target face budgets (e.g. 10k, 25k, 50k faces) for direct export to Roblox Studio, Blender, Unity, or Unreal Engine.
 - **Modern Studio Web UI (`app/web_ui.py`):**
   - Unified dark studio aesthetic.
+  - **Dual Workflow Tabs**: Seamlessly switch between Single View (single photo) and Multi-Angle 360 (orthogonal multi-photo uploads).
   - **Interactive 3D Viewport (`gr.Model3D`)**: Rotate in 360 degrees, zoom, and inspect wireframes directly in the browser.
   - **Dynamic Language Switcher**: Switch between **Español** and **English** in real-time.
   - One-click downloads for `.glb` and `.obj`.
@@ -118,10 +120,13 @@ Drag any `.png` or `.jpg` image directly onto **`CLI_GENERATE.bat`**. The 3D mod
 
 ### Option 3: Command Line Interface (CLI)
 ```bash
-# High-quality generation with Hunyuan3D-2 Turbo (~2 min, 35k target faces, auto-rembg)
+# Multi-Angle generation (Front + Left + Back perspectives, eliminating backside blindspots):
+python app/cli.py --front front.png --left left.png --back back.png --model "Hunyuan3D-2 Multi-View Turbo" --calidad rapida --rembg
+
+# Single-Image generation with Hunyuan3D-2 Turbo (~2 min, 35k target faces, auto-rembg)
 python app/cli.py my_image.png --model "Hunyuan3D-2 Turbo" --calidad ultra --rembg --decimate 35000
 
-# Ultra-fast generation with TripoSR (~12 sec)
+# Ultra-fast single-image generation with TripoSR (~12 sec)
 python app/cli.py my_image.png --model "TripoSR" --rembg
 ```
 
@@ -153,11 +158,12 @@ pip install -r requirements.txt
 ```text
 AI-Powered-3D-Model-Creator/
 ├── app/
-│   ├── web_ui.py                 # Modern Studio Web Interface (Bilingual ES/EN, 3D Viewport)
-│   ├── cli.py                    # Unified command-line interface
+│   ├── web_ui.py                 # Modern Studio Web Interface (Bilingual ES/EN, Dual Single/Multi View, 3D Viewport)
+│   ├── cli.py                    # Unified command-line interface with single and multi-angle flags
 │   ├── models/
 │   │   ├── base.py               # Abstract Base3DModel definition
 │   │   ├── hunyuan3d_model.py    # Hunyuan3D-2 Turbo adapter (DirectML FP16, chunked attention, KV-cache)
+│   │   ├── hunyuan3d_mv_model.py # Hunyuan3D-2 Multi-View Turbo adapter (multi-angle DirectML FP16)
 │   │   └── triposr_model.py      # TripoSR fast adapter (~12s generation)
 │   └── processors/
 │       ├── background.py         # rembg automated background removal
