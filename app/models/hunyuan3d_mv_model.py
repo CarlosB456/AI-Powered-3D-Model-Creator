@@ -158,7 +158,14 @@ class Hunyuan3DMultiViewModel(Base3DModel):
                 Dinov2SelfAttention.forward = orig_fwd
             return cond
 
-    def _diffuse(self, cond: dict, num_steps: int, progress_callback: Optional[Callable] = None) -> torch.Tensor:
+    def _diffuse(
+        self,
+        cond: dict,
+        num_steps: int,
+        progress_callback: Optional[Callable] = None,
+        seed: Optional[int] = None,
+        guidance_scale: float = 5.0
+    ) -> torch.Tensor:
         d = self.device
         self.pipe.model.to(d, dtype=torch.float16)
         self.pipe.model.eval()
@@ -179,11 +186,15 @@ class Hunyuan3DMultiViewModel(Base3DModel):
         batch_size = 1
         sigmas = [i / num_steps for i in range(num_steps + 1)]
         timesteps, _ = retrieve_timesteps(self.pipe.scheduler, num_steps, 'cpu', sigmas=sigmas)
-        latents = self.pipe.prepare_latents(batch_size, torch.float16, "cpu", None).to(d)
+        
+        generator = None
+        if seed is not None:
+            generator = torch.Generator().manual_seed(int(seed))
+        latents = self.pipe.prepare_latents(batch_size, torch.float16, "cpu", generator).to(d)
 
         guidance = None
         if hasattr(self.pipe.model, 'guidance_embed') and self.pipe.model.guidance_embed is True:
-            guidance = torch.tensor([5.0] * batch_size, device=d, dtype=torch.float16)
+            guidance = torch.tensor([float(guidance_scale)] * batch_size, device=d, dtype=torch.float16)
 
         sigmas_tensor = self.pipe.scheduler.sigmas_
         with torch.no_grad():
@@ -195,7 +206,7 @@ class Hunyuan3DMultiViewModel(Base3DModel):
                 t_val = t.expand(latent_input.shape[0]).to(d, dtype=torch.float16) / self.pipe.scheduler.config.num_train_timesteps
                 noise_pred = self.pipe.model(latent_input, t_val, cond_gpu, guidance=guidance)
                 noise_pred_cond, noise_pred_uncond = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond + 5.0 * (noise_pred_cond - noise_pred_uncond)
+                noise_pred = noise_pred_uncond + float(guidance_scale) * (noise_pred_cond - noise_pred_uncond)
 
                 dt = float(sigmas_tensor[i + 1] - sigmas_tensor[i])
                 latents = latents + dt * noise_pred
@@ -290,12 +301,16 @@ class Hunyuan3DMultiViewModel(Base3DModel):
         image: Union[Image.Image, dict],
         quality: str = "rapida",
         progress_callback: Optional[Callable[[float, str], None]] = None,
+        seed: Optional[int] = None,
+        guidance_scale: float = 5.0,
+        steps: Optional[int] = None,
         **kwargs: Any
     ) -> trimesh.Trimesh:
         if not self.is_loaded:
             self.load()
 
         cfg = self.QUALITIES.get(quality, self.QUALITIES['rapida'])
+        num_steps = int(steps) if steps is not None and int(steps) > 0 else cfg['steps']
 
         if progress_callback:
             progress_callback(0.05, "Codificando caracteristicas visuales multi-angulo (DINOv2 MV)...")
@@ -304,9 +319,9 @@ class Hunyuan3DMultiViewModel(Base3DModel):
         print(f"[Hunyuan3D Multi-View] DINOv2 MV completado en {time.time() - t0:.1f}s", flush=True)
 
         if progress_callback:
-            progress_callback(0.25, f"Difusion DiT Multi-View ({cfg['steps']} pasos)...")
+            progress_callback(0.25, f"Difusion DiT Multi-View ({num_steps} pasos)...")
         t1 = time.time()
-        latents = self._diffuse(cond, cfg['steps'], progress_callback)
+        latents = self._diffuse(cond, num_steps, progress_callback, seed=seed, guidance_scale=guidance_scale)
         print(f"[Hunyuan3D Multi-View] DiT completado en {time.time() - t1:.1f}s", flush=True)
 
         if progress_callback:

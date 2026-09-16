@@ -42,6 +42,32 @@ def decimate_mesh(mesh: trimesh.Trimesh, target_faces: int = 50000) -> trimesh.T
         print(f"[WARN] Error durante decimation ({e}), manteniendo malla original.", flush=True)
         return mesh
 
+def remove_floaters(mesh: trimesh.Trimesh, min_ratio: float = 0.005) -> trimesh.Trimesh:
+    """
+    Removes small disconnected floating parts and artifacts (PyMeshLab FloaterRemover).
+    """
+    try:
+        import pymeshlab
+        ms = pymeshlab.MeshSet()
+        m = pymeshlab.Mesh(
+            vertex_matrix=mesh.vertices.astype(np.float64),
+            face_matrix=mesh.faces.astype(np.int32)
+        )
+        ms.add_mesh(m)
+        ms.compute_selection_by_small_disconnected_components_per_face(nbfaceratio=min_ratio)
+        ms.compute_selection_transfer_face_to_vertex(inclusive=False)
+        ms.meshing_remove_selected_vertices_and_faces()
+
+        c_mesh = ms.current_mesh()
+        return trimesh.Trimesh(
+            vertices=c_mesh.vertex_matrix().astype(np.float32),
+            faces=c_mesh.face_matrix().astype(np.int32),
+            process=True
+        )
+    except Exception as e:
+        print(f"[WARN] Floater removal failed: {e}")
+        return mesh
+
 def normalize_mesh(mesh: trimesh.Trimesh, target_scale: float = 1.0) -> trimesh.Trimesh:
     """
     Centers the mesh at origin (0, 0, 0) and normalizes bounding box size.

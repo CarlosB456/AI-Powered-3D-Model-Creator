@@ -6,6 +6,7 @@ Created by Carlos B (eLdarqO)
 import os
 import sys
 import time
+import random
 from PIL import Image
 import gradio as gr
 import torch_directml
@@ -14,14 +15,14 @@ root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
+h3d_path = os.path.join(root_dir, "Hunyuan3D-2")
+
 from app.models import get_model, list_models
-from app.processors import remove_background, prepare_foreground, decimate_mesh, normalize_mesh, export_mesh_files
+from app.processors import remove_background, prepare_foreground, decimate_mesh, normalize_mesh, export_mesh_files, remove_floaters
 
 GPU_NAME = torch_directml.device_name(0)
 
-# ══════════════════════════════════════════════════════════
-#  I18N DICTIONARY (NO EMOJIS, CLEAN & PROFESSIONAL)
-# ══════════════════════════════════════════════════════════
+# Diccionario i18n
 I18N = {
     "es": {
         "title": "AI-Powered 3D Model Creator",
@@ -43,6 +44,15 @@ I18N = {
         "decimate_label": "Reducir polígonos (Decimation)",
         "target_faces_label": "Polígonos objetivo (Caras)",
         "normalize_label": "Centrar y normalizar escala",
+        "adv_header": "Opciones Avanzadas (Generación y Limpieza)",
+        "seed_label": "Semilla (Seed)",
+        "random_seed_label": "Semilla aleatoria",
+        "guidance_label": "Escala de Guía (Guidance Scale / CFG)",
+        "guidance_info": "Controla fidelidad a la imagen (5.0 recomendado para Turbo)",
+        "steps_label": "Sobreescribir pasos DiT (0 = usar preset)",
+        "clean_floaters_label": "Eliminar fragmentos flotantes (Floater Removal)",
+        "examples_single_label": "Ejemplos de Prueba Rápida (Vista Única)",
+        "examples_multi_label": "Ejemplos de Prueba Rápida (Multi-Ángulo)",
         "generate_btn": "Generar Modelo 3D",
         "viewport_label": "Visor 3D Interactivo (Rotar 360° y Zoom)",
         "cutout_label": "Recorte Procesado",
@@ -56,6 +66,7 @@ I18N = {
         "r_gpu": "GPU",
         "r_verts": "Vértices",
         "r_faces": "Caras",
+        "r_seed": "Semilla",
         "r_size": "Tamaño GLB",
         "r_time": "Tiempo Total",
         "footer": f"Creado por Carlos B (eLdarqO) · Hardware: {GPU_NAME} (8GB VRAM) · Compatible con Roblox Studio, Blender, Unity y Unreal Engine",
@@ -80,6 +91,15 @@ I18N = {
         "decimate_label": "Reduce polygon count (Decimation)",
         "target_faces_label": "Target polygon count (Faces)",
         "normalize_label": "Center and normalize scale",
+        "adv_header": "Advanced Options (Generation & Mesh Cleanup)",
+        "seed_label": "Seed",
+        "random_seed_label": "Randomize Seed",
+        "guidance_label": "Guidance Scale (CFG)",
+        "guidance_info": "Controls fidelity to reference image (5.0 recommended for Turbo)",
+        "steps_label": "Override DiT Steps (0 = use preset default)",
+        "clean_floaters_label": "Remove floating mesh debris (Floater Removal)",
+        "examples_single_label": "Quick Test Examples (Single View)",
+        "examples_multi_label": "Quick Test Examples (Multi-Angle)",
         "generate_btn": "Generate 3D Model",
         "viewport_label": "Interactive 3D Viewport (360° Rotate & Zoom)",
         "cutout_label": "Processed Cutout",
@@ -93,15 +113,14 @@ I18N = {
         "r_gpu": "GPU",
         "r_verts": "Vertices",
         "r_faces": "Faces",
+        "r_seed": "Seed",
         "r_size": "GLB Size",
         "r_time": "Total Time",
         "footer": f"Created by Carlos B (eLdarqO) · Hardware: {GPU_NAME} (8GB VRAM) · Compatible with Roblox Studio, Blender, Unity, and Unreal Engine",
     }
 }
 
-# ══════════════════════════════════════════════════════════
-#  HIGH-END TOTAL THEME OVERRIDE CSS (SLEEK DARK STUDIO)
-# ══════════════════════════════════════════════════════════
+# Estilos CSS
 STUDIO_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
@@ -305,7 +324,9 @@ def render_ftr(lang: str) -> str:
 
 def ejecutar_generacion(
     img_single, img_front, img_left, img_back, img_right,
-    modelo, rembg_on, calidad, dec_on, dec_target, norm_on, lang
+    modelo, rembg_on, calidad, dec_on, dec_target, norm_on,
+    semilla_val, semilla_rand, guidance_val, custom_steps_val, limpiar_flotantes_on,
+    lang
 ):
     t = I18N.get(lang, I18N["es"])
     t_start = time.time()
@@ -366,17 +387,34 @@ def ejecutar_generacion(
             input_payload = pil
             views_info = "Vista Unica"
 
+    # Seed calculation
+    if semilla_rand or semilla_val is None:
+        actual_seed = random.randint(1, 10000000)
+    else:
+        actual_seed = int(semilla_val)
+
+    steps_override = int(custom_steps_val) if custom_steps_val and int(custom_steps_val) > 0 else None
+
     # 3. Model generation
-    print(f"[AI-Powered 3D Model Creator] {t['status_generating']} {actual_model_name} ({calidad})...", flush=True)
+    print(f"[AI-Powered 3D Model Creator] {t['status_generating']} {actual_model_name} ({calidad}) [Seed: {actual_seed}, CFG: {guidance_val}, Pasos: {steps_override or 'preset'}]...", flush=True)
     model = get_model(actual_model_name)
-    mesh = model.generate(input_payload, quality=calidad)
+    mesh = model.generate(
+        input_payload,
+        quality=calidad,
+        seed=actual_seed,
+        guidance_scale=float(guidance_val) if guidance_val is not None else 5.0,
+        steps=steps_override
+    )
 
     vi = len(mesh.vertices)
     fi = len(mesh.faces)
 
+    if limpiar_flotantes_on:
+        mesh = remove_floaters(mesh)
+
     if norm_on:
         mesh = normalize_mesh(mesh)
-    if dec_on and dec_target > 0 and dec_target < fi:
+    if dec_on and dec_target > 0 and dec_target < len(mesh.faces):
         mesh = decimate_mesh(mesh, int(dec_target))
 
     vf = len(mesh.vertices)
@@ -394,6 +432,7 @@ def ejecutar_generacion(
 | **{t['r_model']}** | `{actual_model_name}` |
 | **{t['r_views']}** | `{views_info}` |
 | **{t['r_gpu']}** | `{GPU_NAME}` |
+| **{t['r_seed']}** | `{actual_seed}` |
 | **{t['r_verts']}** | **{vf:,}** (original: {vi:,}) |
 | **{t['r_faces']}** | **{ff:,}** (original: {fi:,}) |
 | **{t['r_size']}** | **{glb_kb:.1f} KB** |
@@ -418,6 +457,12 @@ def cambiar_idioma(sel):
         gr.Checkbox.update(label=t["decimate_label"]),
         gr.Slider.update(label=t["target_faces_label"]),
         gr.Checkbox.update(label=t["normalize_label"]),
+        gr.Accordion.update(label=t["adv_header"]),
+        gr.Number.update(label=t["seed_label"]),
+        gr.Checkbox.update(label=t["random_seed_label"]),
+        gr.Slider.update(label=t["guidance_label"], info=t["guidance_info"]),
+        gr.Slider.update(label=t["steps_label"]),
+        gr.Checkbox.update(label=t["clean_floaters_label"]),
         gr.Button.update(value=t["generate_btn"]),
         gr.Model3D.update(label=t["viewport_label"]),
         gr.Image.update(label=t["cutout_label"]),
@@ -442,9 +487,7 @@ def actualizar_calidad(modelo, lang):
         info="TripoSR: Rapida (~10s) | Media (~15s) | Alta (~20s)"
     )
 
-# ══════════════════════════════════════════════════════════
-#  GRADIO APP DEFINITION
-# ══════════════════════════════════════════════════════════
+# Interfaz Gradio
 with gr.Blocks(
     title="AI-Powered 3D Model Creator",
     css=STUDIO_CSS
@@ -486,6 +529,20 @@ with gr.Blocks(
                             type="pil",
                             height=280
                         )
+                        ex_single_paths = [
+                            os.path.join(h3d_path, "assets", "example_images", "052.png"),
+                            os.path.join(h3d_path, "assets", "example_images", "101.png"),
+                            os.path.join(h3d_path, "assets", "example_images", "1123.png"),
+                            os.path.join(h3d_path, "assets", "example_images", "1493.png"),
+                        ]
+                        ex_single_valid = [[p] for p in ex_single_paths if os.path.exists(p)]
+                        if ex_single_valid:
+                            gr.Examples(
+                                examples=ex_single_valid,
+                                inputs=[imagen_input_single],
+                                label=I18N["es"]["examples_single_label"],
+                                examples_per_page=4
+                            )
 
                     with gr.Tab(I18N["es"]["tab_multi"]):
                         gr.HTML(f'<div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 8px;">{I18N["es"]["multi_hint"]}</div>')
@@ -495,6 +552,28 @@ with gr.Blocks(
                         with gr.Row():
                             imagen_back = gr.Image(label=I18N["es"]["view_back"], type="pil", height=150)
                             imagen_right = gr.Image(label=I18N["es"]["view_right"], type="pil", height=150)
+                        ex_multi_paths = [
+                            [
+                                os.path.join(h3d_path, "assets", "example_mv_images", "1", "front.png"),
+                                os.path.join(h3d_path, "assets", "example_mv_images", "1", "left.png"),
+                                os.path.join(h3d_path, "assets", "example_mv_images", "1", "back.png"),
+                                None
+                            ],
+                            [
+                                os.path.join(h3d_path, "assets", "example_mv_images", "2", "front.png"),
+                                os.path.join(h3d_path, "assets", "example_mv_images", "2", "left.png"),
+                                os.path.join(h3d_path, "assets", "example_mv_images", "2", "back.png"),
+                                None
+                            ],
+                        ]
+                        ex_multi_valid = [p for p in ex_multi_paths if os.path.exists(p[0])]
+                        if ex_multi_valid:
+                            gr.Examples(
+                                examples=ex_multi_valid,
+                                inputs=[imagen_front, imagen_left, imagen_back, imagen_right],
+                                label=I18N["es"]["examples_multi_label"],
+                                examples_per_page=2
+                            )
 
                 quitar_fondo_cb = gr.Checkbox(
                     value=True,
@@ -523,6 +602,24 @@ with gr.Blocks(
                 normalizar_cb = gr.Checkbox(
                     value=True,
                     label=I18N["es"]["normalize_label"]
+                )
+
+            with gr.Accordion(I18N["es"]["adv_header"], open=False) as adv_accordion:
+                with gr.Row():
+                    semilla_input = gr.Number(value=1234, label=I18N["es"]["seed_label"], precision=0)
+                    semilla_rand_cb = gr.Checkbox(value=True, label=I18N["es"]["random_seed_label"])
+                guidance_slider = gr.Slider(
+                    minimum=1.0, maximum=15.0, step=0.5, value=5.0,
+                    label=I18N["es"]["guidance_label"],
+                    info=I18N["es"]["guidance_info"]
+                )
+                pasos_slider = gr.Slider(
+                    minimum=0, maximum=30, step=1, value=0,
+                    label=I18N["es"]["steps_label"]
+                )
+                limpiar_flotantes_cb = gr.Checkbox(
+                    value=True,
+                    label=I18N["es"]["clean_floaters_label"]
                 )
 
             generar_btn = gr.Button(
@@ -580,6 +677,12 @@ with gr.Blocks(
             reducir_poligonos_cb,
             poligonos_slider,
             normalizar_cb,
+            adv_accordion,
+            semilla_input,
+            semilla_rand_cb,
+            guidance_slider,
+            pasos_slider,
+            limpiar_flotantes_cb,
             generar_btn,
             visor_3d,
             preview_imagen,
@@ -609,6 +712,11 @@ with gr.Blocks(
             reducir_poligonos_cb,
             poligonos_slider,
             normalizar_cb,
+            semilla_input,
+            semilla_rand_cb,
+            guidance_slider,
+            pasos_slider,
+            limpiar_flotantes_cb,
             lang_state
         ],
         outputs=[
