@@ -471,6 +471,8 @@ class Hunyuan3DDiTPipeline:
         return extra_step_kwargs
 
     def prepare_latents(self, batch_size, dtype, device, generator, latents=None):
+        if isinstance(device, str):
+            device = torch.device(device)
         shape = (batch_size, *self.vae.latent_shape)
         if isinstance(generator, list) and len(generator) != batch_size:
             raise ValueError(

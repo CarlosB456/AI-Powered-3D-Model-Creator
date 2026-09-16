@@ -162,8 +162,8 @@ class Hunyuan3DModel(Base3DModel):
         
         generator = None
         if seed is not None:
-            generator = torch.Generator().manual_seed(int(seed))
-        latents = self.pipe.prepare_latents(batch_size, torch.float16, "cpu", generator).to(d)
+            generator = torch.Generator(device="cpu").manual_seed(int(seed))
+        latents = self.pipe.prepare_latents(batch_size, torch.float16, torch.device("cpu"), generator).to(d)
 
         guidance = None
         if hasattr(self.pipe.model, 'guidance_embed') and self.pipe.model.guidance_embed is True:
