@@ -18,7 +18,11 @@ if root_dir not in sys.path:
 h3d_path = os.path.join(root_dir, "Hunyuan3D-2")
 
 from app.models import get_model, list_models
-from app.processors import remove_background, prepare_foreground, decimate_mesh, normalize_mesh, export_mesh_files, remove_floaters
+from app.processors import (
+    remove_background, prepare_foreground,
+    decimate_mesh, normalize_mesh, export_mesh_files,
+    remove_floaters, bake_textures_onto_mesh
+)
 
 GPU_NAME = torch_directml.device_name(0)
 
@@ -44,6 +48,10 @@ I18N = {
         "decimate_label": "Reducir polígonos (Decimation)",
         "target_faces_label": "Polígonos objetivo (Caras)",
         "normalize_label": "Centrar y normalizar escala",
+        "texture_header": "Texturizado y Materiales PBR",
+        "bake_texture_label": "Generar textura realista (Texture Baking)",
+        "bake_texture_info": "Proyecta e incrusta el color y detalles de las fotos directamente en el archivo GLB en 3D.",
+        "texture_res_label": "Resolución de Textura UV",
         "adv_header": "Opciones Avanzadas (Generación y Limpieza)",
         "seed_label": "Semilla (Seed)",
         "random_seed_label": "Semilla aleatoria",
@@ -67,6 +75,7 @@ I18N = {
         "r_verts": "Vértices",
         "r_faces": "Caras",
         "r_seed": "Semilla",
+        "r_textured": "Textura PBR",
         "r_size": "Tamaño GLB",
         "r_time": "Tiempo Total",
         "footer": f"Creado por Carlos B (eLdarqO) · Hardware: {GPU_NAME} (8GB VRAM) · Compatible con Roblox Studio, Blender, Unity y Unreal Engine",
@@ -91,6 +100,10 @@ I18N = {
         "decimate_label": "Reduce polygon count (Decimation)",
         "target_faces_label": "Target polygon count (Faces)",
         "normalize_label": "Center and normalize scale",
+        "texture_header": "Texturing & PBR Materials",
+        "bake_texture_label": "Generate realistic texture (Texture Baking)",
+        "bake_texture_info": "Projects and embeds photo colors and details directly into the 3D GLB container.",
+        "texture_res_label": "UV Texture Resolution",
         "adv_header": "Advanced Options (Generation & Mesh Cleanup)",
         "seed_label": "Seed",
         "random_seed_label": "Randomize Seed",
@@ -114,6 +127,7 @@ I18N = {
         "r_verts": "Vertices",
         "r_faces": "Faces",
         "r_seed": "Seed",
+        "r_textured": "PBR Texture",
         "r_size": "GLB Size",
         "r_time": "Total Time",
         "footer": f"Created by Carlos B (eLdarqO) · Hardware: {GPU_NAME} (8GB VRAM) · Compatible with Roblox Studio, Blender, Unity, and Unreal Engine",
@@ -325,6 +339,7 @@ def render_ftr(lang: str) -> str:
 def ejecutar_generacion(
     img_single, img_front, img_left, img_back, img_right,
     modelo, rembg_on, calidad, dec_on, dec_target, norm_on,
+    texturizar_on, textura_res_val,
     semilla_val, semilla_rand, guidance_val, custom_steps_val, limpiar_flotantes_on,
     lang
 ):
@@ -417,6 +432,15 @@ def ejecutar_generacion(
     if dec_on and dec_target > 0 and dec_target < len(mesh.faces):
         mesh = decimate_mesh(mesh, int(dec_target))
 
+    # 4. Texture Baking
+    if texturizar_on:
+        views_payload = processed_dict if is_multiview else preview_cutout
+        mesh = bake_textures_onto_mesh(
+            mesh,
+            views_payload,
+            texture_resolution=int(textura_res_val) if textura_res_val else 1024
+        )
+
     vf = len(mesh.vertices)
     ff = len(mesh.faces)
 
@@ -424,6 +448,8 @@ def ejecutar_generacion(
     glb_path, obj_path = export_mesh_files(mesh, out_dir, f"mesh_{ts}")
     t_total = time.time() - t_start
     glb_kb = os.path.getsize(glb_path) / 1024
+
+    textured_status = "Si (PBR UV Baking)" if texturizar_on else "No (Solo Geometria)"
 
     info_md = f"""### {t['r_title']}
 
@@ -433,6 +459,7 @@ def ejecutar_generacion(
 | **{t['r_views']}** | `{views_info}` |
 | **{t['r_gpu']}** | `{GPU_NAME}` |
 | **{t['r_seed']}** | `{actual_seed}` |
+| **{t['r_textured']}** | `{textured_status}` |
 | **{t['r_verts']}** | **{vf:,}** (original: {vi:,}) |
 | **{t['r_faces']}** | **{ff:,}** (original: {fi:,}) |
 | **{t['r_size']}** | **{glb_kb:.1f} KB** |
@@ -457,6 +484,9 @@ def cambiar_idioma(sel):
         gr.Checkbox.update(label=t["decimate_label"]),
         gr.Slider.update(label=t["target_faces_label"]),
         gr.Checkbox.update(label=t["normalize_label"]),
+        gr.Accordion.update(label=t["texture_header"]),
+        gr.Checkbox.update(label=t["bake_texture_label"], info=t["bake_texture_info"]),
+        gr.Radio.update(label=t["texture_res_label"]),
         gr.Accordion.update(label=t["adv_header"]),
         gr.Number.update(label=t["seed_label"]),
         gr.Checkbox.update(label=t["random_seed_label"]),
@@ -604,6 +634,18 @@ with gr.Blocks(
                     label=I18N["es"]["normalize_label"]
                 )
 
+            with gr.Accordion(I18N["es"]["texture_header"], open=True) as texture_accordion:
+                texturizar_cb = gr.Checkbox(
+                    value=True,
+                    label=I18N["es"]["bake_texture_label"],
+                    info=I18N["es"]["bake_texture_info"]
+                )
+                textura_res_radio = gr.Radio(
+                    choices=[512, 1024, 2048],
+                    value=1024,
+                    label=I18N["es"]["texture_res_label"]
+                )
+
             with gr.Accordion(I18N["es"]["adv_header"], open=False) as adv_accordion:
                 with gr.Row():
                     semilla_input = gr.Number(value=1234, label=I18N["es"]["seed_label"], precision=0)
@@ -677,6 +719,9 @@ with gr.Blocks(
             reducir_poligonos_cb,
             poligonos_slider,
             normalizar_cb,
+            texture_accordion,
+            texturizar_cb,
+            textura_res_radio,
             adv_accordion,
             semilla_input,
             semilla_rand_cb,
@@ -712,6 +757,8 @@ with gr.Blocks(
             reducir_poligonos_cb,
             poligonos_slider,
             normalizar_cb,
+            texturizar_cb,
+            textura_res_radio,
             semilla_input,
             semilla_rand_cb,
             guidance_slider,

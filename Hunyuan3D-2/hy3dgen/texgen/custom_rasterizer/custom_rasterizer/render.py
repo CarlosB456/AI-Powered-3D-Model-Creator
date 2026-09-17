@@ -12,7 +12,10 @@
 # fine-tuning enabling code and other elements of the foregoing made publicly available
 # by Tencent in accordance with TENCENT HUNYUAN COMMUNITY LICENSE AGREEMENT.
 
-import custom_rasterizer_kernel
+try:
+    import custom_rasterizer_kernel
+except ImportError:
+    from . import rasterizer_numba as custom_rasterizer_kernel
 import torch
 
 
