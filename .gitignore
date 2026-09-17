@@ -23,6 +23,7 @@ output/cache/
 # Output directories & user-generated assets
 output/*.glb
 output/*.obj
+output/*.mtl
 output/*.png
 output/*.jpg
 output/*.ply

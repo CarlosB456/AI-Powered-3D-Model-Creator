@@ -66,6 +66,7 @@ I18N = {
         "cutout_label": "Recorte Procesado",
         "download_glb": "Descargar GLB",
         "download_obj": "Descargar OBJ",
+        "download_texture": "Descargar Textura (PNG)",
         "no_image_err": "Por favor sube al menos una imagen.",
         "status_generating": "Generando modelo 3D con",
         "r_title": "Modelo 3D Generado",
@@ -118,6 +119,7 @@ I18N = {
         "cutout_label": "Processed Cutout",
         "download_glb": "Download GLB",
         "download_obj": "Download OBJ",
+        "download_texture": "Download Texture (PNG)",
         "no_image_err": "Please upload at least one image.",
         "status_generating": "Generating 3D model with",
         "r_title": "3D Model Ready",
@@ -357,7 +359,7 @@ def ejecutar_generacion(
 
     is_multiview = len(raw_images) > 0
     if not is_multiview and img_single is None:
-        return None, None, None, None, f"[Error] {t['no_image_err']}"
+        return None, None, None, None, None, f"[Error] {t['no_image_err']}"
 
     # Auto-switch to Multi-View model if multiple views provided and default single-view model was selected
     actual_model_name = modelo
@@ -433,19 +435,24 @@ def ejecutar_generacion(
         mesh = decimate_mesh(mesh, int(dec_target))
 
     # 4. Texture Baking
+    texture_png_path = None
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    base_name = f"mesh_{ts}"
+
     if texturizar_on:
         views_payload = processed_dict if is_multiview else preview_cutout
-        mesh = bake_textures_onto_mesh(
+        mesh, texture_png_path = bake_textures_onto_mesh(
             mesh,
             views_payload,
-            texture_resolution=int(textura_res_val) if textura_res_val else 1024
+            texture_resolution=int(textura_res_val) if textura_res_val else 1024,
+            output_dir=out_dir,
+            base_name=base_name
         )
 
     vf = len(mesh.vertices)
     ff = len(mesh.faces)
 
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    glb_path, obj_path = export_mesh_files(mesh, out_dir, f"mesh_{ts}")
+    glb_path, obj_path = export_mesh_files(mesh, out_dir, base_name)
     t_total = time.time() - t_start
     glb_kb = os.path.getsize(glb_path) / 1024
 
@@ -465,7 +472,7 @@ def ejecutar_generacion(
 | **{t['r_size']}** | **{glb_kb:.1f} KB** |
 | **{t['r_time']}** | **{t_total:.1f} segundos** |
 """
-    return preview_cutout, glb_path, glb_path, obj_path, info_md
+    return preview_cutout, glb_path, glb_path, obj_path, texture_png_path, info_md
 
 def cambiar_idioma(sel):
     lang = "es" if "Español" in sel else "en"
@@ -498,6 +505,7 @@ def cambiar_idioma(sel):
         gr.Image.update(label=t["cutout_label"]),
         gr.File.update(label=t["download_glb"]),
         gr.File.update(label=t["download_obj"]),
+        gr.File.update(label=t["download_texture"]),
         render_ftr(lang)
     )
 
@@ -636,7 +644,7 @@ with gr.Blocks(
 
             with gr.Accordion(I18N["es"]["texture_header"], open=True) as texture_accordion:
                 texturizar_cb = gr.Checkbox(
-                    value=True,
+                    value=False,
                     label=I18N["es"]["bake_texture_label"],
                     info=I18N["es"]["bake_texture_info"]
                 )
@@ -687,7 +695,9 @@ with gr.Blocks(
                 )
                 with gr.Column():
                     descarga_glb = gr.File(label=I18N["es"]["download_glb"])
-                    descarga_obj = gr.File(label=I18N["es"]["download_obj"])
+                    with gr.Row():
+                        descarga_obj = gr.File(label=I18N["es"]["download_obj"])
+                        descarga_textura = gr.File(label=I18N["es"]["download_texture"])
 
             with gr.Box():
                 info_resultado = gr.Markdown(label="Resumen")
@@ -733,6 +743,7 @@ with gr.Blocks(
             preview_imagen,
             descarga_glb,
             descarga_obj,
+            descarga_textura,
             footer_html
         ]
     )
@@ -771,6 +782,7 @@ with gr.Blocks(
             visor_3d,
             descarga_glb,
             descarga_obj,
+            descarga_textura,
             info_resultado
         ]
     )
