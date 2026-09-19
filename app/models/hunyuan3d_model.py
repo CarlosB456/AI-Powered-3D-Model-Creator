@@ -30,11 +30,20 @@ from hy3dgen.shapegen.pipelines import export_to_trimesh, retrieve_timesteps
 from hy3dgen.shapegen.models.autoencoders import SurfaceExtractors
 
 def chunked_dino_forward(self, hidden_states, head_mask=None, output_attentions=False):
-    mixed_query_layer = self.query(hidden_states)
-    key_layer = self.transpose_for_scores(self.key(hidden_states))
-    value_layer = self.transpose_for_scores(self.value(hidden_states))
-    query_layer = self.transpose_for_scores(mixed_query_layer)
+    """
+    Chunked query attention for Dinov2SelfAttention.
+    Compatible with transformers >= 4.46 (no transpose_for_scores).
+    Uses view+transpose to reshape QKV, then chunks Q to limit peak VRAM.
+    Author: Carlos B (eLdarqO)
+    """
+    batch_size = hidden_states.shape[0]
+    new_shape = (batch_size, -1, self.num_attention_heads, self.attention_head_size)
 
+    key_layer = self.key(hidden_states).view(*new_shape).transpose(1, 2)
+    value_layer = self.value(hidden_states).view(*new_shape).transpose(1, 2)
+    query_layer = self.query(hidden_states).view(*new_shape).transpose(1, 2)
+
+    # query_layer shape: (B, H, L, D)
     B, H, L, D = query_layer.shape
     chunk_size = 512
     scale = 1.0 / math.sqrt(D)
@@ -44,17 +53,16 @@ def chunked_dino_forward(self, hidden_states, head_mask=None, output_attentions=
         q_chunk = query_layer[:, :, i:i+chunk_size, :]
         attn_scores = torch.matmul(q_chunk, key_layer.transpose(-1, -2)) * scale
         attn_probs = torch.softmax(attn_scores, dim=-1)
-        attn_probs = self.dropout(attn_probs)
         if head_mask is not None:
             attn_probs = attn_probs * head_mask
         ctx_chunk = torch.matmul(attn_probs, value_layer)
         context_chunks.append(ctx_chunk)
 
     context_layer = torch.cat(context_chunks, dim=2)
+    # (B, H, L, D) -> (B, L, H, D) -> (B, L, H*D)
     context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
-    new_shape = context_layer.size()[:-2] + (self.all_head_size,)
-    context_layer = context_layer.view(new_shape)
-    return (context_layer,)
+    context_layer = context_layer.reshape(batch_size, -1, self.all_head_size)
+    return context_layer, None
 
 class Hunyuan3DModel(Base3DModel):
     QUALITIES = {
