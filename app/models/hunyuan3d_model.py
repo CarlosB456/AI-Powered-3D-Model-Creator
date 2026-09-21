@@ -64,12 +64,34 @@ def chunked_dino_forward(self, hidden_states, head_mask=None, output_attentions=
     context_layer = context_layer.reshape(batch_size, -1, self.all_head_size)
     return context_layer, None
 
+class ChunkedCrossAttentionProcessor:
+    """
+    Memory-efficient Cross-Attention Processor for Hunyuan3D-2 Volume Decoder.
+    Prevents large contiguous VRAM allocations on DirectML (AMD Radeon RX 6600)
+    by chunking queries along the sequence dimension.
+    Author: Carlos B (eLdarqO)
+    """
+    def __init__(self, chunk_size: int = 2048):
+        self.chunk_size = chunk_size
+
+    def __call__(self, attn, q, k, v):
+        S_q = q.shape[-2]
+        if S_q <= self.chunk_size:
+            return torch.nn.functional.scaled_dot_product_attention(q, k, v)
+
+        outs = []
+        for i in range(0, S_q, self.chunk_size):
+            q_chunk = q[:, :, i:i+self.chunk_size, :]
+            out_chunk = torch.nn.functional.scaled_dot_product_attention(q_chunk, k, v)
+            outs.append(out_chunk)
+        return torch.cat(outs, dim=-2)
+
 class Hunyuan3DModel(Base3DModel):
     QUALITIES = {
-        'ultra':   {'octree': 128, 'steps': 4, 'chunks': 8192, 'label': 'Ultra (~2 min, octree 128 - 2.1M puntos)'},
-        'rapida':  {'octree': 128, 'steps': 5, 'chunks': 8192, 'label': 'Rapida (~2.5 min, octree 128 - 2.1M puntos)'},
-        'media':   {'octree': 192, 'steps': 5, 'chunks': 8192, 'label': 'Media (~4.5 min, octree 192 - 7.1M puntos)'},
-        'alta':    {'octree': 256, 'steps': 5, 'chunks': 8192, 'label': 'Alta (~8 min, octree 256 - 17.0M puntos)'},
+        'ultra':   {'octree': 128, 'steps': 4, 'chunks': 16384, 'label': 'Ultra (~1.5 min, octree 128 - 2.1M puntos)'},
+        'rapida':  {'octree': 128, 'steps': 5, 'chunks': 16384, 'label': 'Rápida (~2 min, octree 128 - 2.1M puntos)'},
+        'media':   {'octree': 160, 'steps': 5, 'chunks': 16384, 'label': 'Media (~3.5 min, octree 160 - 4.1M puntos)'},
+        'alta':    {'octree': 192, 'steps': 5, 'chunks': 16384, 'label': 'Alta (~5 min, octree 192 - 7.1M puntos)'},
     }
 
     def __init__(self):
@@ -96,6 +118,11 @@ class Hunyuan3DModel(Base3DModel):
             device='cpu',
             dtype=torch.float32
         )
+        # Install memory-safe chunked cross attention for geo_decoder
+        if hasattr(self.pipe.vae, 'geo_decoder'):
+            self.pipe.vae.geo_decoder.set_cross_attention_processor(
+                ChunkedCrossAttentionProcessor(chunk_size=2048)
+            )
         self.is_loaded = True
         print("[Hunyuan3D] Pipeline listo!", flush=True)
 
@@ -231,7 +258,9 @@ class Hunyuan3DModel(Base3DModel):
         # Intentar en GPU primero, con fallback automático a CPU
         grid_logits = None
         try:
+            gc.collect()
             geo_decoder = self.pipe.vae.geo_decoder
+            geo_decoder.set_cross_attention_processor(ChunkedCrossAttentionProcessor(chunk_size=2048))
             geo_decoder.to(d).half().eval()
 
             if hasattr(geo_decoder.cross_attn_decoder, 'attn'):
@@ -242,14 +271,16 @@ class Hunyuan3DModel(Base3DModel):
 
             batch_logits = []
             t0 = time.time()
+            chunk_idx = 0
             with torch.no_grad():
                 for start in range(0, total_points, num_chunks):
+                    chunk_idx += 1
                     chunk_queries = xyz_samples[start:start+num_chunks, :].to(d, dtype=torch.float16)
                     chunk_queries = repeat(chunk_queries, "p c -> b p c", b=batch_size)
                     logits = geo_decoder(queries=chunk_queries, latents=latents_gpu)
                     batch_logits.append(logits.cpu().float())
 
-                    if progress_callback:
+                    if progress_callback and (chunk_idx % 15 == 0 or start + num_chunks >= total_points):
                         done = min(start + num_chunks, total_points)
                         progress_callback(0.65 + 0.25 * (done / total_points), f"Volume Decode GPU ({done:,}/{total_points:,})")
 

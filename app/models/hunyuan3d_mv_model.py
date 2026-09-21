@@ -29,12 +29,15 @@ _orig_dino_forward = None
 def chunked_dino_forward(self, hidden_states, head_mask=None, output_attentions=False):
     """
     Chunked Attention for DINOv2 to prevent DirectML allocation crashes on 8GB GPUs.
-    Properly matches HuggingFace Dinov2SelfAttention signature and attributes.
+    Compatible with transformers >= 4.46 (no transpose_for_scores).
+    Author: Carlos B (eLdarqO)
     """
-    mixed_query_layer = self.query(hidden_states)
-    key_layer = self.transpose_for_scores(self.key(hidden_states))
-    value_layer = self.transpose_for_scores(self.value(hidden_states))
-    query_layer = self.transpose_for_scores(mixed_query_layer)
+    batch_size = hidden_states.shape[0]
+    new_shape = (batch_size, -1, self.num_attention_heads, self.attention_head_size)
+
+    key_layer = self.key(hidden_states).view(*new_shape).transpose(1, 2)
+    value_layer = self.value(hidden_states).view(*new_shape).transpose(1, 2)
+    query_layer = self.query(hidden_states).view(*new_shape).transpose(1, 2)
 
     B, H, L, D = query_layer.shape
     chunk_size = 512
@@ -45,7 +48,6 @@ def chunked_dino_forward(self, hidden_states, head_mask=None, output_attentions=
         q_chunk = query_layer[:, :, i:i+chunk_size, :]
         attn_scores = torch.matmul(q_chunk, key_layer.transpose(-1, -2)) * scale
         attn_probs = torch.softmax(attn_scores, dim=-1)
-        attn_probs = self.dropout(attn_probs)
         if head_mask is not None:
             attn_probs = attn_probs * head_mask
         ctx_chunk = torch.matmul(attn_probs, value_layer)
@@ -53,9 +55,31 @@ def chunked_dino_forward(self, hidden_states, head_mask=None, output_attentions=
 
     context_layer = torch.cat(context_chunks, dim=2)
     context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
-    new_shape = context_layer.size()[:-2] + (self.all_head_size,)
-    context_layer = context_layer.view(new_shape)
-    return (context_layer, None) if output_attentions else (context_layer,)
+    context_layer = context_layer.reshape(batch_size, -1, self.all_head_size)
+    return context_layer, None
+
+
+class ChunkedCrossAttentionProcessor:
+    """
+    Memory-efficient Cross-Attention Processor for Hunyuan3D-2 Multi-View Volume Decoder.
+    Prevents large contiguous VRAM allocations on DirectML (AMD Radeon RX 6600)
+    by chunking queries along the sequence dimension.
+    Author: Carlos B (eLdarqO)
+    """
+    def __init__(self, chunk_size: int = 2048):
+        self.chunk_size = chunk_size
+
+    def __call__(self, attn, q, k, v):
+        S_q = q.shape[-2]
+        if S_q <= self.chunk_size:
+            return torch.nn.functional.scaled_dot_product_attention(q, k, v)
+
+        outs = []
+        for i in range(0, S_q, self.chunk_size):
+            q_chunk = q[:, :, i:i+self.chunk_size, :]
+            out_chunk = torch.nn.functional.scaled_dot_product_attention(q_chunk, k, v)
+            outs.append(out_chunk)
+        return torch.cat(outs, dim=-2)
 
 
 class Hunyuan3DMultiViewModel(Base3DModel):
@@ -64,10 +88,10 @@ class Hunyuan3DMultiViewModel(Base3DModel):
     Accepts Front, Left, Back, and Right views to reconstruct complete 360-degree geometry.
     """
     QUALITIES = {
-        'ultra':   {'octree': 128, 'steps': 4, 'chunks': 8192, 'label': 'Ultra (~2 min, octree 128 - 2.1M puntos)'},
-        'rapida':  {'octree': 128, 'steps': 5, 'chunks': 8192, 'label': 'Rapida (~2.5 min, octree 128 - 2.1M puntos)'},
-        'media':   {'octree': 192, 'steps': 5, 'chunks': 8192, 'label': 'Media (~4.5 min, octree 192 - 7.1M puntos)'},
-        'alta':    {'octree': 256, 'steps': 5, 'chunks': 8192, 'label': 'Alta (~8 min, octree 256 - 17.0M puntos)'},
+        'ultra':   {'octree': 128, 'steps': 4, 'chunks': 16384, 'label': 'Ultra (~1.5 min, octree 128 - 2.1M puntos)'},
+        'rapida':  {'octree': 128, 'steps': 5, 'chunks': 16384, 'label': 'Rápida (~2 min, octree 128 - 2.1M puntos)'},
+        'media':   {'octree': 160, 'steps': 5, 'chunks': 16384, 'label': 'Media (~3.5 min, octree 160 - 4.1M puntos)'},
+        'alta':    {'octree': 192, 'steps': 5, 'chunks': 16384, 'label': 'Alta (~5 min, octree 192 - 7.1M puntos)'},
     }
 
     def __init__(self):
@@ -96,6 +120,11 @@ class Hunyuan3DMultiViewModel(Base3DModel):
             device='cpu',
             dtype=torch.float32
         )
+        # Install memory-safe chunked cross attention for geo_decoder
+        if hasattr(self.pipe.vae, 'geo_decoder'):
+            self.pipe.vae.geo_decoder.set_cross_attention_processor(
+                ChunkedCrossAttentionProcessor(chunk_size=2048)
+            )
         self.is_loaded = True
         print("[Hunyuan3D Multi-View] Pipeline listo!", flush=True)
 
@@ -249,7 +278,9 @@ class Hunyuan3DMultiViewModel(Base3DModel):
         grid_logits = None
 
         try:
+            gc.collect()
             geo_decoder = self.pipe.vae.geo_decoder
+            geo_decoder.set_cross_attention_processor(ChunkedCrossAttentionProcessor(chunk_size=2048))
             geo_decoder.to(d).half().eval()
 
             if hasattr(geo_decoder.cross_attn_decoder, 'attn'):
@@ -259,14 +290,16 @@ class Hunyuan3DMultiViewModel(Base3DModel):
             latents_gpu = latents_dec.to(d, dtype=torch.float16)
 
             batch_logits = []
+            chunk_idx = 0
             with torch.no_grad():
                 for start in range(0, total_points, num_chunks):
+                    chunk_idx += 1
                     chunk_queries = xyz_samples[start:start+num_chunks, :].to(d, dtype=torch.float16)
                     chunk_queries = repeat(chunk_queries, "p c -> b p c", b=batch_size)
                     logits = geo_decoder(queries=chunk_queries, latents=latents_gpu)
                     batch_logits.append(logits.cpu().float())
 
-                    if progress_callback:
+                    if progress_callback and (chunk_idx % 15 == 0 or start + num_chunks >= total_points):
                         done = min(start + num_chunks, total_points)
                         progress_callback(0.65 + 0.25 * (done / total_points), f"Decodificacion Multi-View GPU ({done:,}/{total_points:,})")
 
