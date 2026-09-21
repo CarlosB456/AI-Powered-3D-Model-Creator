@@ -35,14 +35,16 @@ except Exception as e:
     _TEXTURE_ENGINE_AVAILABLE = False
 
 
-def recenter_and_pad_view(
+def align_image_to_mesh_projection(
     image: Image.Image,
-    target_size: int = 1024,
-    border_ratio: float = 0.15
+    render: MeshRender,
+    elev: float = 0.0,
+    azim: float = 0.0,
+    target_size: int = 1024
 ) -> Image.Image:
     """
-    Centers the subject in a square canvas without stretching or aspect ratio distortion.
-    Pads with a transparent background so only the genuine foreground subject is projected.
+    Aligns a 2D foreground image directly to the exact screen-space projection bounds of the 3D mesh.
+    Eliminates scale mismatch, offset halos, and silhouette drift.
     Author: Carlos B (eLdarqO)
     """
     img_rgba = image.convert("RGBA")
@@ -53,22 +55,35 @@ def recenter_and_pad_view(
     if non_zero.size == 0:
         return img_rgba.resize((target_size, target_size), Image.Resampling.LANCZOS)
 
-    min_row, min_col = non_zero.min(axis=0)
-    max_row, max_col = non_zero.max(axis=0)
+    y_min, x_min = non_zero.min(axis=0)
+    y_max, x_max = non_zero.max(axis=0)
 
-    cropped = img_rgba.crop((min_col, min_row, max_col + 1, max_row + 1))
-    w, h = cropped.size
+    cropped = img_rgba.crop((x_min, y_min, x_max + 1, y_max + 1))
 
-    # Maintain exact aspect ratio; add uniform proportional padding
-    pad = int(max(w, h) * border_ratio)
-    square_dim = max(w, h) + 2 * pad
+    # Compute 3D mesh screen bounds for this specific camera viewpoint
+    r_mv = get_mv_matrix(elev=elev, azim=azim, camera_distance=render.camera_distance)
+    pos_camera = transform_pos(r_mv, render.vtx_pos, keepdim=True)
+    pos_camera = (pos_camera[:, :3] / pos_camera[:, 3:4]).cpu().numpy()
 
-    canvas = Image.new("RGBA", (square_dim, square_dim), (0, 0, 0, 0))
-    paste_x = (square_dim - w) // 2
-    paste_y = (square_dim - h) // 2
-    canvas.paste(cropped, (paste_x, paste_y))
+    cam_x = pos_camera[:, 0]
+    cam_y = pos_camera[:, 1]
 
-    return canvas.resize((target_size, target_size), Image.Resampling.LANCZOS)
+    W, H = float(target_size), float(target_size)
+    mesh_x_min = (cam_x.min() / 1.2 + 0.5) * W
+    mesh_x_max = (cam_x.max() / 1.2 + 0.5) * W
+    mesh_y_min = (0.5 - cam_y.max() / 1.2) * H
+    mesh_y_max = (0.5 - cam_y.min() / 1.2) * H
+
+    mesh_w = max(1.0, mesh_x_max - mesh_x_min)
+    mesh_h = max(1.0, mesh_y_max - mesh_y_min)
+
+    resized = cropped.resize((int(round(mesh_w)), int(round(mesh_h))), Image.Resampling.LANCZOS)
+
+    canvas = Image.new("RGBA", (target_size, target_size), (0, 0, 0, 0))
+    paste_x = int(round(mesh_x_min))
+    paste_y = int(round(mesh_y_min))
+    canvas.paste(resized, (paste_x, paste_y), resized)
+    return canvas
 
 
 def project_view_with_alpha(
@@ -206,10 +221,10 @@ def bake_textures_onto_mesh(
         project_textures = []
         project_weighted_cos_maps = []
 
-        # 5. Multi-angle Back-projection with Screen Alpha Masking
+        # 5. Multi-angle Back-projection with Screen Alpha Masking & Exact Silhouette Alignment
         for img, elev, azim, weight in view_tuples:
-            centered_rgba = recenter_and_pad_view(img, target_size=texture_resolution, border_ratio=0.15)
-            proj_tex, proj_cos = project_view_with_alpha(render, centered_rgba, elev=elev, azim=azim)
+            aligned_rgba = align_image_to_mesh_projection(img, render, elev=elev, azim=azim, target_size=texture_resolution)
+            proj_tex, proj_cos = project_view_with_alpha(render, aligned_rgba, elev=elev, azim=azim)
             proj_cos = weight * (proj_cos ** 4)
             project_textures.append(proj_tex)
             project_weighted_cos_maps.append(proj_cos)
